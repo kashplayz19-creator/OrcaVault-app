@@ -1,0 +1,6 @@
+{
+  "name": "Nexus Vault",
+  "description": "Elite 360° Investment Research Platform and Personal Operating System",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
