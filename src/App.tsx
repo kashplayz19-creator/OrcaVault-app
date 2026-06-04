@@ -5,7 +5,7 @@ import ErrorAPIFailurePage from './components/ErrorAPIFailurePage';
 import Global404Page from './components/Global404Page';
 import OfflineStatusPage from './components/OfflineStatusPage';
 import EmptyStateWorkspace from './components/EmptyStateWorkspace';
-import CommandShell from './components/CommandShell';
+import OrcavaultDashboardCanvas from './components/OrcavaultDashboardCanvas';
 
 export default function App() {
   const [systemState, setSystemState] = useState<"DECRYPT" | "LOADING" | "ERROR" | "NOT_FOUND" | "OFFLINE" | "EMPTY" | "ACTIVE">("DECRYPT");
@@ -29,7 +29,7 @@ export default function App() {
       {systemState === "NOT_FOUND" && <Global404Page onBack={() => setSystemState("ACTIVE")} />}
       {systemState === "OFFLINE" && <OfflineStatusPage onReconnect={() => setSystemState("LOADING")} />}
       {systemState === "EMPTY" && <EmptyStateWorkspace onInit={() => setSystemState("ACTIVE")} />}
-      {systemState === "ACTIVE" && <CommandShell onReEncrypt={() => setSystemState("DECRYPT")} />}
+      {systemState === "ACTIVE" && <OrcavaultDashboardCanvas onReEncrypt={() => setSystemState("DECRYPT")} />}
     </>
   );
 }
