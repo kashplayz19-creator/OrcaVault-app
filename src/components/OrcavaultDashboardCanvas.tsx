@@ -258,19 +258,84 @@ function ElegantStockChart({ metrics }: { metrics: StockMetric }) {
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
 
   const twelveDataKey = (import.meta as any).env.VITE_TWELVEDATA_KEY;
-  const [liveCandles, setLiveCandles] = useState<{ date: string; open: number; high: number; low: number; close: number }[] | null>(null);
+  const [marketData, setMarketData] = useState<CandleData[]>([]);
   const [loadingChart, setLoadingChart] = useState(false);
   const [chartError, setChartError] = useState<string | null>(null);
+
+  const fetchLiveStockPrices = async (userQuery: string) => {
+    try {
+      const pureSymbol = userQuery.split('.')[0].toUpperCase().trim();
+      // Auto-format the simple query for Indian indices if no suffix is provided
+      const standardSymbol = userQuery.includes('.') ? userQuery : `${pureSymbol}.NS`;
+      
+      const intervalYahoo = activeRange === '1D' ? '15m' : activeRange === '1W' ? '1h' : '1d';
+      const rangeYahoo = activeRange === '1D' ? '1d' : activeRange === '1W' ? '7d' : activeRange === '1M' ? '1mo' : activeRange === '1Y' ? '1y' : '3mo';
+
+      const targetUrl = `https://query1.financeapi.com/v8/finance/chart/${standardSymbol}?interval=${intervalYahoo}&range=${rangeYahoo}`;
+      const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`;
+      
+      let res;
+      try {
+        res = await fetch(targetUrl);
+        if (!res.ok) throw new Error("CORS blockage");
+      } catch {
+        res = await fetch(proxyUrl);
+      }
+
+      if (res && res.ok) {
+        const data = await res.json();
+        const result = data.chart?.result?.[0];
+        if (result) {
+          const timestamps = result.timestamp || [];
+          const quotes = result.indicators?.quote?.[0] || {};
+          const opens = quotes.open || [];
+          const highs = quotes.high || [];
+          const lows = quotes.low || [];
+          const closes = quotes.close || [];
+
+          const parsed: CandleData[] = [];
+          for (let i = 0; i < timestamps.length; i++) {
+            if (closes[i] !== null && closes[i] !== undefined && opens[i] !== null) {
+              const dateObj = new Date(timestamps[i] * 1000);
+              const dateStr = dateObj.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+              parsed.push({
+                date: dateStr,
+                open: Math.round((parseFloat(opens[i]) || parseFloat(closes[i])) * 100) / 100,
+                high: Math.round((parseFloat(highs[i]) || parseFloat(closes[i])) * 100) / 100,
+                low: Math.round((parseFloat(lows[i]) || parseFloat(closes[i])) * 100) / 100,
+                close: Math.round(parseFloat(closes[i]) * 100) / 100,
+              });
+            }
+          }
+          if (parsed.length > 0) {
+            const size = activeRange === '1D' ? 30 : activeRange === '1W' ? 30 : activeRange === '1M' ? 30 : activeRange === '1Y' ? 100 : 150;
+            const skipFactor = Math.max(1, Math.floor(parsed.length / size));
+            const filtered: CandleData[] = [];
+            for (let i = 0; i < parsed.length; i += skipFactor) {
+              filtered.push(parsed[i]);
+            }
+            return filtered;
+          }
+        }
+      }
+      
+      // Secondary fallback to primary REST solver
+      return await fetchHistoricalStockData(userQuery, activeRange, metrics.price);
+    } catch (e: any) {
+      console.warn("fetchLiveStockPrices error, dropping back to key-backed or simulated historical REST data:", e);
+      return await fetchHistoricalStockData(userQuery, activeRange, metrics.price);
+    }
+  };
 
   useEffect(() => {
     let isMounted = true;
     setLoadingChart(true);
     setChartError(null);
     
-    fetchHistoricalStockData(metrics.symbol, activeRange, metrics.price)
+    fetchLiveStockPrices(metrics.symbol)
       .then(data => {
         if (!isMounted) return;
-        setLiveCandles(data);
+        setMarketData(data);
       })
       .catch(err => {
         if (isMounted) {
@@ -288,67 +353,16 @@ function ElegantStockChart({ metrics }: { metrics: StockMetric }) {
     };
   }, [metrics.symbol, activeRange, metrics.price]);
 
-  const candles = useMemo(() => {
-    if (liveCandles && liveCandles.length > 0) {
-      return liveCandles;
-    }
+  const candles = marketData;
 
-    // High-fidelity live simulation fallback
-    const baseline = metrics.price;
-    const seed = metrics.symbol.charCodeAt(0) + (metrics.symbol.charCodeAt(1) || 0);
-    
-    let iterations = 22;
-    if (activeRange === '1D') iterations = 14;
-    else if (activeRange === '1W') iterations = 10;
-    else if (activeRange === '1M') iterations = 24;
-    else if (activeRange === '1Y') iterations = 28;
-    else iterations = 32;
-
-    const points: { date: string; open: number; high: number; low: number; close: number }[] = [];
-    let currentVal = baseline * (0.91 + (seed % 10) / 100);
-
-    for (let i = 0; i < iterations; i++) {
-      const fraction = i / (iterations - 1 || 1);
-      const rand1 = Math.sin(fraction * Math.PI * 2.5 + seed + i) * 0.04;
-      const rand2 = Math.cos(i * 1.9 + seed) * 0.02;
-      const growth = (activeRange === '1Y' || activeRange === 'ALL') ? (fraction * 0.12) : 0;
-      
-      const open = currentVal;
-      let close = open * (1.002 + rand1 + rand2 + (growth / iterations));
-      
-      if (i === iterations - 1) {
-        close = baseline;
-      }
-
-      const high = Math.max(open, close) * (1.006 + Math.abs(Math.sin(i * 1.3) * 0.012));
-      const low = Math.min(open, close) * (0.994 - Math.abs(Math.cos(i * 1.7) * 0.012));
-
-      currentVal = close;
-
-      const dateObj = new Date();
-      dateObj.setDate(dateObj.getDate() - (iterations - i));
-      const dateStr = dateObj.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
-
-      points.push({
-        date: dateStr,
-        open: Math.round(open * 100) / 100,
-        high: Math.round(high * 100) / 100,
-        low: Math.round(low * 100) / 100,
-        close: Math.round(close * 100) / 100
-      });
-    }
-
-    return points;
-  }, [metrics.price, metrics.symbol, activeRange, liveCandles]);
-
-  const minVal = useMemo(() => Math.min(...candles.map(c => c.low)) * 0.99, [candles]);
-  const maxVal = useMemo(() => Math.max(...candles.map(c => c.high)) * 1.01, [candles]);
+  const minVal = useMemo(() => candles.length > 0 ? Math.min(...candles.map(c => c.low)) * 0.99 : 0, [candles]);
+  const maxVal = useMemo(() => candles.length > 0 ? Math.max(...candles.map(c => c.high)) * 1.01 : 100, [candles]);
   const valueRange = useMemo(() => (maxVal - minVal) || 1, [minVal, maxVal]);
 
-  const activeCandle = hoverIndex !== null ? candles[hoverIndex] : candles[candles.length - 1];
-  const activeDate = hoverIndex !== null 
+  const activeCandle = hoverIndex !== null && candles.length > 0 ? candles[hoverIndex] : candles.length > 0 ? candles[candles.length - 1] : { open: metrics.price, high: metrics.price, low: metrics.price, close: metrics.price };
+  const activeDate = hoverIndex !== null && candles.length > 0 
     ? activeCandle.date 
-    : (liveCandles ? 'Live Stream Segment' : 'Simulated Session Segment');
+    : (candles.length > 0 ? 'Live Stream Segment' : 'Connecting Live Feed...');
 
   const gridLineCounts = 5;
   const gridLines = useMemo(() => {
@@ -388,7 +402,7 @@ function ElegantStockChart({ metrics }: { metrics: StockMetric }) {
             {loadingChart && (
               <RefreshCw className="w-3 h-3 text-zinc-500 animate-spin" />
             )}
-            {!loadingChart && liveCandles && (
+            {!loadingChart && candles.length > 0 && (
               <span className="w-1.5 h-1.5 rounded-full bg-[#00B074] animate-pulse" />
             )}
           </span>
@@ -427,22 +441,29 @@ function ElegantStockChart({ metrics }: { metrics: StockMetric }) {
         </div>
         
         <div className="flex-1 w-full relative min-h-0">
-          <svg 
-            viewBox="0 0 100 100" 
-            preserveAspectRatio="none" 
-            className="w-full h-full overflow-visible"
-            onMouseLeave={() => setHoverIndex(null)}
-            onMouseMove={(e) => {
-              const rect = e.currentTarget.getBoundingClientRect();
-              const xFraction = (e.clientX - rect.left) / rect.width;
-              const innerFrac = (xFraction - 0.03) / 0.78;
-              const index = Math.min(
-                candles.length - 1,
-                Math.max(0, Math.floor(innerFrac * candles.length))
-              );
-              setHoverIndex(index);
-            }}
-          >
+          {candles.length === 0 ? (
+            <div className="absolute inset-0 flex flex-col justify-center items-center">
+              <RefreshCw className="w-8 h-8 text-[#00F0FF] animate-spin mb-3" />
+              <p className="text-zinc-455 text-[11px] font-mono tracking-wider uppercase animate-pulse">Syncing live order book queues & real-time pricing matrix...</p>
+            </div>
+          ) : (
+            <svg 
+              viewBox="0 0 100 100" 
+              preserveAspectRatio="none" 
+              className="w-full h-full overflow-visible"
+              onMouseLeave={() => setHoverIndex(null)}
+              onMouseMove={(e) => {
+                if (candles.length === 0) return;
+                const rect = e.currentTarget.getBoundingClientRect();
+                const xFraction = (e.clientX - rect.left) / rect.width;
+                const innerFrac = (xFraction - 0.03) / 0.78;
+                const index = Math.min(
+                  candles.length - 1,
+                  Math.max(0, Math.floor(innerFrac * candles.length))
+                );
+                setHoverIndex(index);
+              }}
+            >
           {gridLines.map((line, idx) => (
             <g key={idx}>
               <line 
@@ -526,6 +547,7 @@ function ElegantStockChart({ metrics }: { metrics: StockMetric }) {
             </g>
           )}
         </svg>
+      )}
       </div>
       </div>
 
