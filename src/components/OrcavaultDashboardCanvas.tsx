@@ -11,7 +11,7 @@ import ErrorAPIFailurePage from './ErrorAPIFailurePage';
 import OfflineStatusPage from './OfflineStatusPage';
 import EmptyStateWorkspace from './EmptyStateWorkspace';
 import OrcaNotesVault from './OrcaNotesVault';
-import IntelligenceCard, { NewsInsightProps } from './IntelligenceCard';
+import { IntelligenceCard, NewsInsightProps } from './IntelligenceCard';
 
 import { 
   Search, 
@@ -76,7 +76,90 @@ function ElegantStockChart({ metrics }: { metrics: StockMetric }) {
   const [activeRange, setActiveRange] = useState<'1D' | '1W' | '1M' | '1Y' | 'ALL'>('1M');
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
 
+  const twelveDataKey = (import.meta as any).env.VITE_TWELVEDATA_KEY;
+  const [liveCandles, setLiveCandles] = useState<{ date: string; open: number; high: number; low: number; close: number }[] | null>(null);
+  const [loadingChart, setLoadingChart] = useState(false);
+  const [chartError, setChartError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!twelveDataKey) {
+      setLiveCandles(null);
+      return;
+    }
+    
+    let isMounted = true;
+    setLoadingChart(true);
+    setChartError(null);
+    
+    // Construct symbol properly
+    const symbol = metrics.symbol.includes('.') || metrics.symbol.includes(':') 
+      ? metrics.symbol 
+      : `${metrics.symbol}.BSE`;
+      
+    const interval = activeRange === '1D' ? '15min' : activeRange === '1W' ? '2h' : '1day';
+    const size = activeRange === '1D' ? 30 : activeRange === '1W' ? 30 : activeRange === '1M' ? 30 : activeRange === '1Y' ? 100 : 150;
+    
+    fetch(`https://api.twelvedata.com/time_series?symbol=${symbol}&interval=${interval}&apikey=${twelveDataKey}&outputsize=${size}`)
+      .then(res => {
+        if (!res.ok) {
+          throw new Error(`HTTP Error: ${res.status}`);
+        }
+        return res.json();
+      })
+      .then(data => {
+        if (!isMounted) return;
+        if (data.status === "error") {
+          setChartError(data.message || "Failed to retrieve live data from Twelve Data");
+          setLiveCandles(null);
+          return;
+        }
+        if (!data.values || !Array.isArray(data.values)) {
+          setChartError("Invalid data structure returned from Twelve Data stream");
+          setLiveCandles(null);
+          return;
+        }
+        
+        const parsedCandles = data.values.map((item: any) => {
+          const dObj = new Date(item.datetime);
+          const dStr = dObj.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+          return {
+            date: dStr,
+            open: parseFloat(item.open),
+            high: parseFloat(item.high),
+            low: parseFloat(item.low),
+            close: parseFloat(item.close),
+            datetimeObj: dObj
+          };
+        });
+        
+        // Sort in ascending order
+        parsedCandles.sort((a: any, b: any) => a.datetimeObj.getTime() - b.datetimeObj.getTime());
+        
+        setLiveCandles(parsedCandles);
+      })
+      .catch(err => {
+        if (isMounted) {
+          setChartError(err.message || "Network connection failure to Twelve Data API");
+          setLiveCandles(null);
+        }
+      })
+      .finally(() => {
+        if (isMounted) {
+          setLoadingChart(false);
+        }
+      });
+      
+    return () => {
+      isMounted = false;
+    };
+  }, [metrics.symbol, activeRange, twelveDataKey]);
+
   const candles = useMemo(() => {
+    if (liveCandles && liveCandles.length > 0) {
+      return liveCandles;
+    }
+
+    // High-fidelity live simulation fallback
     const baseline = metrics.price;
     const seed = metrics.symbol.charCodeAt(0) + (metrics.symbol.charCodeAt(1) || 0);
     
@@ -88,8 +171,6 @@ function ElegantStockChart({ metrics }: { metrics: StockMetric }) {
     else iterations = 32;
 
     const points: { date: string; open: number; high: number; low: number; close: number }[] = [];
-    
-    // We generate consecutive candles leading to metrics.price
     let currentVal = baseline * (0.91 + (seed % 10) / 100);
 
     for (let i = 0; i < iterations; i++) {
@@ -101,7 +182,6 @@ function ElegantStockChart({ metrics }: { metrics: StockMetric }) {
       const open = currentVal;
       let close = open * (1.002 + rand1 + rand2 + (growth / iterations));
       
-      // Hook up final candle to exact metrics.price
       if (i === iterations - 1) {
         close = baseline;
       }
@@ -109,7 +189,6 @@ function ElegantStockChart({ metrics }: { metrics: StockMetric }) {
       const high = Math.max(open, close) * (1.006 + Math.abs(Math.sin(i * 1.3) * 0.012));
       const low = Math.min(open, close) * (0.994 - Math.abs(Math.cos(i * 1.7) * 0.012));
 
-      // current value for next open is close of current
       currentVal = close;
 
       const dateObj = new Date();
@@ -126,14 +205,16 @@ function ElegantStockChart({ metrics }: { metrics: StockMetric }) {
     }
 
     return points;
-  }, [metrics.price, metrics.symbol, activeRange]);
+  }, [metrics.price, metrics.symbol, activeRange, liveCandles]);
 
   const minVal = useMemo(() => Math.min(...candles.map(c => c.low)) * 0.99, [candles]);
   const maxVal = useMemo(() => Math.max(...candles.map(c => c.high)) * 1.01, [candles]);
   const valueRange = useMemo(() => (maxVal - minVal) || 1, [minVal, maxVal]);
 
   const activeCandle = hoverIndex !== null ? candles[hoverIndex] : candles[candles.length - 1];
-  const activeDate = hoverIndex !== null ? activeCandle.date : 'Live Session Interval';
+  const activeDate = hoverIndex !== null 
+    ? activeCandle.date 
+    : (liveCandles ? 'Live Stream Segment' : 'Simulated Session Segment');
 
   const gridLineCounts = 5;
   const gridLines = useMemo(() => {
@@ -141,7 +222,7 @@ function ElegantStockChart({ metrics }: { metrics: StockMetric }) {
     for (let i = 0; i < gridLineCounts; i++) {
       const fraction = i / (gridLineCounts - 1);
       const price = minVal + fraction * valueRange;
-      const y = 90 - fraction * 80; // Map between 10 and 90
+      const y = 90 - fraction * 80;
       lines.push({ price, y });
     }
     return lines;
@@ -149,9 +230,34 @@ function ElegantStockChart({ metrics }: { metrics: StockMetric }) {
 
   return (
     <div className="bg-[#0c0d0e] border border-zinc-800/50 rounded-xl p-6 relative select-none">
+      {/* Missing Key Amber Warning Banner */}
+      {!twelveDataKey && (
+        <div className="bg-amber-500/5 text-amber-400 border border-amber-500/20 p-4 rounded-xl text-xs flex flex-col space-y-2 mb-4 leading-relaxed">
+          <span className="font-bold flex items-center gap-1.5">
+            ⚠️ Connection Pending
+          </span>
+          <span>VITE_TWELVEDATA_KEY is not configured in your local environment. Please update your .env.local file to initialize live streaming analytics.</span>
+        </div>
+      )}
+
+      {/* Live Error Notification */}
+      {chartError && (
+        <div className="bg-amber-500/5 text-amber-400 border border-amber-500/20 p-3 rounded-xl text-[10px] mb-4 leading-normal">
+          <b>Twelve Data Access Warning:</b> {chartError}. Relying on robust local historical simulations.
+        </div>
+      )}
+
       <Flex justify="justify-between" align="items-start" className="mb-4 flex-col sm:flex-row gap-3">
         <div>
-          <span className="text-xs text-zinc-400 font-sans tracking-wide uppercase">Historical Candlestick Matrix ({activeRange})</span>
+          <span className="text-xs text-zinc-400 font-sans tracking-wide uppercase flex items-center gap-1.5">
+            Historical Candlestick Matrix ({activeRange})
+            {loadingChart && (
+              <RefreshCw className="w-3 h-3 text-zinc-500 animate-spin" />
+            )}
+            {!loadingChart && liveCandles && (
+              <span className="w-1.5 h-1.5 rounded-full bg-[#10b981] animate-pulse" />
+            )}
+          </span>
           <Flex align="items-baseline" gap="gap-3" className="mt-1">
             <span className={`text-2xl font-mono font-bold tracking-tight ${activeCandle.close >= activeCandle.open ? 'text-[#10b981]' : 'text-[#f43f5e]'}`}>
               ₹{activeCandle.close.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -159,11 +265,10 @@ function ElegantStockChart({ metrics }: { metrics: StockMetric }) {
             <span className="text-xs text-zinc-500 font-sans">({activeDate})</span>
           </Flex>
           
-          {/* Candle Details Indicators */}
           <div className="flex flex-wrap gap-x-3.5 gap-y-1 mt-2 text-[10px] font-mono text-zinc-500">
-            <span>O: <span className="text-zinc-300">₹{activeCandle.open.toLocaleString("en-IN")}</span></span>
+            <span>O: <span className="text-zinc-350">₹{activeCandle.open.toLocaleString("en-IN")}</span></span>
             <span>H: <span className="text-zinc-300">₹{activeCandle.high.toLocaleString("en-IN")}</span></span>
-            <span>L: <span className="text-zinc-350">₹{activeCandle.low.toLocaleString("en-IN")}</span></span>
+            <span>L: <span className="text-zinc-450">₹{activeCandle.low.toLocaleString("en-IN")}</span></span>
             <span>C: <span className="text-zinc-300">₹{activeCandle.close.toLocaleString("en-IN")}</span></span>
           </div>
         </div>
@@ -172,6 +277,7 @@ function ElegantStockChart({ metrics }: { metrics: StockMetric }) {
           {(['1D', '1W', '1M', '1Y', 'ALL'] as const).map((r) => (
             <button
               key={r}
+              disabled={loadingChart}
               onClick={() => {
                 setActiveRange(r);
                 setHoverIndex(null);
@@ -185,7 +291,6 @@ function ElegantStockChart({ metrics }: { metrics: StockMetric }) {
       </Flex>
 
       <div className="h-48 w-full relative mt-4">
-        {/* SVG Native Candlestick Grid */}
         <svg 
           viewBox="0 0 100 100" 
           preserveAspectRatio="none" 
@@ -194,7 +299,6 @@ function ElegantStockChart({ metrics }: { metrics: StockMetric }) {
           onMouseMove={(e) => {
             const rect = e.currentTarget.getBoundingClientRect();
             const xFraction = (e.clientX - rect.left) / rect.width;
-            // Map xFraction of entire width to of active rendering width (from 3% to 81%)
             const innerFrac = (xFraction - 0.03) / 0.78;
             const index = Math.min(
               candles.length - 1,
@@ -203,7 +307,6 @@ function ElegantStockChart({ metrics }: { metrics: StockMetric }) {
             setHoverIndex(index);
           }}
         >
-          {/* background grid and values */}
           {gridLines.map((line, idx) => (
             <g key={idx}>
               <line 
@@ -226,7 +329,6 @@ function ElegantStockChart({ metrics }: { metrics: StockMetric }) {
             </g>
           ))}
 
-          {/* Candle columns rendering */}
           {candles.map((c, idx) => {
             const cx = 3 + (idx / (candles.length - 1)) * 78;
             const yHigh = 90 - ((c.high - minVal) / valueRange) * 80;
@@ -244,7 +346,6 @@ function ElegantStockChart({ metrics }: { metrics: StockMetric }) {
 
             return (
               <g key={idx} className="opacity-90 hover:opacity-100 transition-opacity">
-                {/* Thin vertical wick line */}
                 <line 
                   x1={cx} 
                   y1={yHigh} 
@@ -254,7 +355,6 @@ function ElegantStockChart({ metrics }: { metrics: StockMetric }) {
                   strokeWidth="0.4" 
                 />
                 
-                {/* Structured body rectangle */}
                 <rect 
                   x={cx - candleWidth / 2} 
                   y={rectTop} 
@@ -268,7 +368,6 @@ function ElegantStockChart({ metrics }: { metrics: StockMetric }) {
             );
           })}
 
-          {/* Hover crosshair state */}
           {hoverIndex !== null && (
             <g>
               <line 
@@ -318,7 +417,7 @@ const blueChipList = [
 
 export default function OrcavaultDashboardCanvas({ onReEncrypt }: OrcavaultDashboardCanvasProps) {
   const [search, setSearch] = useState("");
-  const [cache, setCache] = useLocalStorageState<string[]>("ticker_cache", ["TCS", "SBIN", "ZOMATO", "HDFCBANK", "NIFTYBEES"]);
+  const [cache, setCache] = useLocalStorageState<string[]>("ticker_cache", []);
   const [showOfflineOverlay, setShowOfflineOverlay] = useState(false);
   const [sidebarTab, setSidebarTab] = useLocalStorageState<'TELEMETRY' | 'NOTES'>("active_sidebar_tab", 'TELEMETRY');
   const [customLogs, setCustomLogs] = useLocalStorageState<string[]>("telemetry_history", []);
@@ -345,7 +444,7 @@ export default function OrcavaultDashboardCanvas({ onReEncrypt }: OrcavaultDashb
     copilotEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [copilotMessages]);
 
-  const handleCopilotSubmit = () => {
+  const handleCopilotSubmit = async () => {
     if (!copilotInput.trim()) return;
     const userText = copilotInput.trim();
     const timestamp = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
@@ -353,27 +452,122 @@ export default function OrcavaultDashboardCanvas({ onReEncrypt }: OrcavaultDashb
     setCopilotMessages(prev => [...prev, { sender: 'user', text: userText, time: timestamp }]);
     setCopilotInput("");
 
-    setTimeout(() => {
-      const respTimestamp = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
-      let reply = "";
-      const lower = userText.toLowerCase();
+    // Setup pending diagnostic state
+    setCopilotMessages(prev => [...prev, { sender: 'assistant', text: "Analyzing stream and sovereign policy context...", time: timestamp }]);
 
-      if (lower.includes("price") || lower.includes("cost") || lower.includes("value")) {
-        reply = `Analyzing ${metrics.symbol} pricing vectors. Currently trading at ₹${metrics.price.toLocaleString("en-IN")}. Graham's Intrinsic calculated value is ₹${metrics.grahamNumber}.`;
-      } else if (lower.includes("margin") || lower.includes("profit")) {
-        reply = `${metrics.symbol} shows robust operating margin parameters of ${metrics.operatingMargin}%, which qualifies as defensive under our Benjamin Graham analysis.`;
-      } else if (lower.includes("debt") || lower.includes("leverage") || lower.includes("safety")) {
-        reply = `Leverage is recorded at a stable ${metrics.leverageDebtToEquity}x debt-to-equity ratio, securing a margin of safety index of ${metrics.marginOfSafetyPercent}%.`;
-      } else {
-        reply = `Copilot diagnostic evaluation for ${metrics.symbol}: profitability is rated ${metrics.profitabilityGrade}, growth prospects is ${metrics.growthGrade}, overall checklist index is ${metrics.overallGrade}. Focus models indicate stable accumulation parameters.`;
+    const geminiKey = (import.meta as any).env.VITE_GEMINI_API_KEY;
+    const openRouterKey = (import.meta as any).env.VITE_OPENROUTER_API_KEY;
+
+    if (!geminiKey && !openRouterKey) {
+      setTimeout(() => {
+        const respTimestamp = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+        let reply = "";
+        const lower = userText.toLowerCase();
+
+        if (lower.includes("price") || lower.includes("cost") || lower.includes("value")) {
+          reply = `Analyzing ${metrics.symbol} pricing vectors. Currently trading at ₹${metrics.price.toLocaleString("en-IN")}. Graham's Intrinsic calculated value is ₹${metrics.grahamNumber}. [Note: Connect VITE_GEMINI_API_KEY to authorize live AI streaming]`;
+        } else if (lower.includes("margin") || lower.includes("profit")) {
+          reply = `${metrics.symbol} shows robust operating margin parameters of ${metrics.operatingMargin}%, which qualifies as defensive under our Benjamin Graham analysis. [Note: Connect VITE_GEMINI_API_KEY to authorize live AI streaming]`;
+        } else if (lower.includes("debt") || lower.includes("leverage") || lower.includes("safety")) {
+          reply = `Leverage is recorded at a stable ${metrics.leverageDebtToEquity}x debt-to-equity ratio, securing a margin of safety index of ${metrics.marginOfSafetyPercent}%. [Note: Connect VITE_GEMINI_API_KEY to authorize live AI streaming]`;
+        } else {
+          reply = `Copilot diagnostic evaluation for ${metrics.symbol}: profitability is ${metrics.profitabilityGrade}, growth prospects is ${metrics.growthGrade}, overall checklist index is ${metrics.overallGrade}. Focus models indicate stable accumulation parameters. [Note: Connect VITE_GEMINI_API_KEY to authorize live AI]`;
+        }
+
+        setCopilotMessages(prev => {
+          const next = [...prev];
+          if (next.length > 0 && next[next.length - 1].text === "Analyzing stream and sovereign policy context...") {
+            next[next.length - 1] = { sender: 'assistant', text: reply, time: respTimestamp };
+          }
+          return next;
+        });
+      }, 700);
+      return;
+    }
+
+    try {
+      let replyText = "";
+      const promptContext = `
+        You are Orca Copilot, an expert sovereign financial advisor specialized in Benjamin Graham's defensive model.
+        Provide a smart, helpful, concise, context-grounded response to the user's query about the Indian stock market or ${metrics.symbol}.
+        
+        Sovereign security telemetry context for ${metrics.symbol}:
+        - Market Price: ₹${metrics.price}
+        - Graham Number Target: ₹${metrics.grahamNumber}
+        - Operating Margin: ${metrics.operatingMargin}%
+        - P/E Ratio: ${metrics.peRatio}x
+        - Valuation Grade: ${metrics.valuationGrade}
+        - Debt to Equity: ${metrics.leverageDebtToEquity}x
+        - Quality Check Rating: ${metrics.overallGrade}
+        - Growth Grade: ${metrics.growthGrade}
+        - Profitability Grade: ${metrics.profitabilityGrade}
+        - Calculated Margin of Safety: ${metrics.marginOfSafetyPercent}%
+
+        User query: "${userText}"
+        Provide clear, bulleted, professional guidance or diagnostics based on Graham's parameters.
+      `;
+
+      if (openRouterKey) {
+        const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${openRouterKey}`,
+            "HTTP-Referer": window.location.origin,
+            "X-Title": "Orcavault Terminal"
+          },
+          body: JSON.stringify({
+            model: "google/gemini-2.5-flash",
+            messages: [{ role: "user", content: promptContext }]
+          })
+        });
+        const data = await response.json();
+        if (data.choices && data.choices[0] && data.choices[0].message) {
+          replyText = data.choices[0].message.content;
+        } else {
+          throw new Error(data.error?.message || "Invalid OpenRouter response format");
+        }
+      } else if (geminiKey) {
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: promptContext }] }]
+          })
+        });
+        const data = await response.json();
+        if (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts && data.candidates[0].content.parts[0]) {
+          replyText = data.candidates[0].content.parts[0].text;
+        } else {
+          throw new Error(data.error?.message || "Invalid Gemini response format");
+        }
       }
 
-      setCopilotMessages(prev => [...prev, {
-        sender: 'assistant',
-        text: reply,
-        time: respTimestamp
-      }]);
-    }, 600);
+      const respTimestamp = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+      setCopilotMessages(prev => {
+        const next = [...prev];
+        if (next.length > 0 && next[next.length - 1].text === "Analyzing stream and sovereign policy context...") {
+          next[next.length - 1] = { sender: 'assistant', text: replyText, time: respTimestamp };
+        }
+        return next;
+      });
+
+    } catch (error: any) {
+      const errorTimestamp = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+      setCopilotMessages(prev => {
+        const next = [...prev];
+        if (next.length > 0 && next[next.length - 1].text === "Analyzing stream and sovereign policy context...") {
+          next[next.length - 1] = { 
+            sender: 'assistant', 
+            text: `[Sovereign Network Alert]: Live Stream Sync failed. ${error.message || "Please check key permissions."}`, 
+            time: errorTimestamp 
+          };
+        }
+        return next;
+      });
+    }
   };
 
   const { 
@@ -1039,42 +1233,15 @@ export default function OrcavaultDashboardCanvas({ onReEncrypt }: OrcavaultDashb
                     Sovereign AI-Summarized Research Intel
                   </span>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6" id="intelligence-cards-container">
-                    {/* Hardcoded Premium Benchmarks requested by user */}
-                    <IntelligenceCard
-                      title="Reliance Clean Energy Hub & Power Corridor Corridor Expansion Approved"
-                      category="Strategic Expansion"
-                      sentiment="BULLISH"
-                      confidence={96}
-                      summary={[
-                        "Consortium greenlights ₹45,000Cr clean energy conversion corridor spanning central and western transit grids.",
-                        "Strategic heavy-machinery and EPC vendors confirm full baseline load capacity agreements.",
-                        "Projected long-term operating margins are expected to increase structural yield index by 3.4% annualized."
-                      ]}
-                      impactedTicker="RELIANCE"
-                      timingSignal="Immediate Entry Window"
-                      sources={[
-                        { name: "REUTERS Terminal", url: "https://www.reuters.com" },
-                        { name: "NSE India Feed", url: "https://www.nseindia.com" }
-                      ]}
-                    />
-
-                    <IntelligenceCard
-                      title="Sovereign Policy Rate Retained: RBI Maintains Central Repo Anchor at 6.50%"
-                      category="Macro Economic Pulse"
-                      sentiment="NEUTRAL"
-                      confidence={91}
-                      summary={[
-                        "Reserve Bank of India retains baseline lending rates to anchor core consumer inflation safely within target bands.",
-                        "Liquidity buffers across sovereign bonds and major corporate banking networks remain highly resilient.",
-                        "Equity valuation discount multipliers stay balanced with no near-term adjustments to interest rates."
-                      ]}
-                      impactedTicker="NIFTY_INDEX"
-                      timingSignal="Hold Strategy Active"
-                      sources={[
-                        { name: "Bloomberg", url: "https://www.bloomberg.com" },
-                        { name: "Economic Times India", url: "https://economictimes.indiatimes.com" }
-                      ]}
-                    />
+                    {/* Missing Key Amber Warning Banner */}
+                    {!(import.meta as any).env.VITE_GEMINI_API_KEY && (
+                      <div className="bg-amber-500/5 text-amber-400 border border-amber-500/20 p-4 rounded-xl text-xs flex flex-col space-y-2 col-span-full mb-2">
+                        <span className="font-bold flex items-center gap-1.5">
+                          ⚠️ Connection Pending
+                        </span>
+                        <span>VITE_GEMINI_API_KEY is not configured in your local environment. Please update your .env.local file to initialize live streaming analytics.</span>
+                      </div>
+                    )}
 
                     {/* Reactively-mapped ticker analysis content */}
                     {newsIntelligenceData.map((item, idx) => (
