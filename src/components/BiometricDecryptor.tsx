@@ -30,7 +30,7 @@ export default function BiometricDecryptor({ onDecryptSuccess }: { onDecryptSucc
           </div>
 
           <h2 className="font-sans text-xl font-semibold text-zinc-100 tracking-tight text-center">
-            Nexus Vault Authentication
+            Orca Vault Authentication
           </h2>
           <p className="font-sans text-xs text-zinc-400 text-center mt-1.5 mb-6">
             Enter your credential token to decrypt and access your private asset workspace.
