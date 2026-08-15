@@ -359,7 +359,7 @@ function ElegantStockChart({ metrics }: { metrics: StockMetric }) {
   const maxVal = useMemo(() => candles.length > 0 ? Math.max(...candles.map(c => c.high)) * 1.01 : 100, [candles]);
   const valueRange = useMemo(() => (maxVal - minVal) || 1, [minVal, maxVal]);
 
-  const activeCandle = hoverIndex !== null && candles.length > 0 ? candles[hoverIndex] : candles.length > 0 ? candles[candles.length - 1] : { open: metrics.price, high: metrics.price, low: metrics.price, close: metrics.price };
+  const activeCandle: CandleData = hoverIndex !== null && candles.length > 0 ? candles[hoverIndex] : candles.length > 0 ? candles[candles.length - 1] : { date: '---', open: metrics.price, high: metrics.price, low: metrics.price, close: metrics.price };
   const activeDate = hoverIndex !== null && candles.length > 0 
     ? activeCandle.date 
     : (candles.length > 0 ? 'Live Stream Segment' : 'Connecting Live Feed...');
@@ -525,19 +525,19 @@ function ElegantStockChart({ metrics }: { metrics: StockMetric }) {
             );
           })}
 
-          {hoverIndex !== null && (
+          {hoverIndex !== null && candles[hoverIndex] && (
             <g>
               <line 
-                x1={3 + (hoverIndex / (candles.length - 1)) * 78} 
+                x1={3 + (hoverIndex / Math.max(1, candles.length - 1)) * 78} 
                 y1="5" 
-                x2={3 + (hoverIndex / (candles.length - 1)) * 78} 
+                x2={3 + (hoverIndex / Math.max(1, candles.length - 1)) * 78} 
                 y2="95" 
                 stroke="rgba(0, 240, 255, 0.4)" 
                 strokeWidth="0.25" 
                 strokeDasharray="1.5" 
               />
               <circle 
-                cx={3 + (hoverIndex / (candles.length - 1)) * 78} 
+                cx={3 + (hoverIndex / Math.max(1, candles.length - 1)) * 78} 
                 cy={90 - ((candles[hoverIndex].close - minVal) / valueRange) * 80} 
                 r="1.2" 
                 fill="#ffffff" 
@@ -552,9 +552,9 @@ function ElegantStockChart({ metrics }: { metrics: StockMetric }) {
       </div>
 
       <Flex justify="justify-between" className="mt-2 text-[9px] text-[#52525b] font-sans tracking-wide pr-[16%] pl-[3%]">
-        <span>{candles[0].date}</span>
-        <span>{candles[Math.floor(candles.length / 2)].date}</span>
-        <span>{candles[candles.length - 1].date}</span>
+        <span>{candles.length > 0 ? candles[0].date : '---'}</span>
+        <span>{candles.length > 0 ? candles[Math.floor(candles.length / 2)].date : '---'}</span>
+        <span>{candles.length > 0 ? candles[candles.length - 1].date : '---'}</span>
       </Flex>
     </div>
   );
