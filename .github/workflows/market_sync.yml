@@ -1,0 +1,60 @@
+import os
+import pandas as pd
+import yfinance as yf
+from supabase import create_client, Client
+
+# Enforce environment variables
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise ValueError("Missing Supabase credentials in environment variables.")
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+def calculate_rsi(data: pd.DataFrame, window: int = 14) -> pd.Series:
+    """Calculates Relative Strength Index (RSI) using Wilder's Smoothing method."""
+    delta = data['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
+    
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+def fetch_and_store_ticker(ticker_symbol: str):
+    try:
+        # Fetch daily data for Indian stocks (e.g., 'HDFCBANK.NS' or 'TCS.NS')
+        ticker = yf.Ticker(ticker_symbol)
+        df = ticker.history(period="3m", interval="1d")
+
+        if df.empty:
+            print(f"⚠️ No data returned for {ticker_symbol}")
+            return
+
+        # Calculate exact RSI
+        df['RSI'] = calculate_rsi(df)
+        
+        latest_row = df.iloc[-1]
+        latest_price = float(latest_row['Close'])
+        latest_rsi = float(latest_row['RSI'])
+        
+        payload = {
+            "symbol": ticker_symbol,
+            "price": round(latest_price, 2),
+            "rsi": round(latest_rsi, 2),
+            "updated_at": "now()"
+        }
+
+        # Upsert payload into Supabase table 'market_indicators'
+        response = supabase.table("market_indicators").upsert(payload, on_conflict="symbol").execute()
+        print(f"✅ Successfully updated {ticker_symbol}: Price ₹{latest_price}, RSI {latest_rsi}")
+
+    except Exception as err:
+        print(f"❌ Error processing {ticker_symbol}: {str(err)}")
+
+if __name__ == "__main__":
+    # Example tracking list
+    watchlist = ["HDFCBANK.NS", "TCS.NS", "NIFTYBEES.NS"]
+    for symbol in watchlist:
+        fetch_and_store_ticker(symbol)
